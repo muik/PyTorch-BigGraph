@@ -6,10 +6,12 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE.txt file in the root directory of this source tree.
 
+import os
 import datetime
 import random
 from abc import ABC, abstractmethod
 from contextlib import ExitStack
+from functools import reduce
 from pathlib import Path
 from typing import Any, Counter, Dict, Iterable, List, Optional, Tuple
 
@@ -28,6 +30,8 @@ from torchbiggraph.graph_storages import (
     AbstractRelationTypeStorage,
 )
 from torchbiggraph.types import UNPARTITIONED
+
+from gevent.threadpool import ThreadPool
 
 
 def log(msg):
@@ -97,13 +101,19 @@ def collect_relation_types(
 ) -> Dictionary:
 
     if dynamic_relations:
-        log("Looking up relation types in the edge files...")
-        counter: Counter[str] = Counter()
-        for edgepath in edge_paths:
+        def _counter(edgepath):
+            log("Looking up relation types in the edge files...")
+            counter: Counter[str] = Counter()
             for _lhs_word, _rhs_word, rel_word in edgelist_reader.read(edgepath):
                 if rel_word is None:
                     raise RuntimeError("Need to specify rel_col in dynamic mode.")
                 counter[rel_word] += 1
+
+            return counter
+
+        p = ThreadPool(max(os.cpu_count(), 3))
+        counter_list = p.map(_counter, edge_paths)
+        counter: Counter[str] = reduce(lambda a, b: a + b, counter_list)
 
         log(f"- Found {len(counter)} relation types")
         if relation_type_min_count > 0:
@@ -136,12 +146,13 @@ def collect_entities_by_type(
     entity_min_count: int,
 ) -> Dict[str, Dictionary]:
 
-    counters: Dict[str, Counter[str]] = {}
-    for entity_name in entity_configs.keys():
-        counters[entity_name] = Counter()
+    def _counters(edgepath):
+        counters: Dict[str, Counter[str]] = {}
+        for entity_name in entity_configs.keys():
+            counters[entity_name] = Counter()
 
-    log("Searching for the entities in the edge files...")
-    for edgepath in edge_paths:
+        log("Searching for the entities in the edge files...")
+
         for lhs_word, rhs_word, rel_word in edgelist_reader.read(edgepath):
             if dynamic_relations or rel_word is None:
                 rel_id = 0
@@ -153,6 +164,19 @@ def collect_entities_by_type(
 
             counters[relation_configs[rel_id].lhs][lhs_word] += 1
             counters[relation_configs[rel_id].rhs][rhs_word] += 1
+
+        return counters
+
+    p = ThreadPool(max(os.cpu_count(), 3))
+    counters_list = p.map(_counters, edge_paths)
+
+    counters: Dict[str, Counter[str]] = {}
+    for entity_name in entity_configs.keys():
+        counters[entity_name] = Counter()
+
+    for item in counters_list:
+        for entity_name, counter in item.items():
+            counters[entity_name] += counter
 
     entities_by_type: Dict[str, Dictionary] = {}
     for entity_name, counter in counters.items():
@@ -380,9 +404,8 @@ def convert_input_data(
         dynamic_relations,
     )
 
-    for edge_path_in, edge_path_out, edge_storage in zip(
-        edge_paths_in, edge_paths_out, edge_storages
-    ):
+    def _generate_edge_path_files(item):
+        edge_path_in, edge_path_out, edge_storage = item
         generate_edge_path_files(
             edge_path_in,
             edge_path_out,
@@ -393,6 +416,10 @@ def convert_input_data(
             dynamic_relations,
             edgelist_reader,
         )
+
+    p = ThreadPool(max(os.cpu_count(), 3))
+    p.map(_generate_edge_path_files, zip(
+        edge_paths_in, edge_paths_out, edge_storages))
 
 
 def parse_config_partial(
