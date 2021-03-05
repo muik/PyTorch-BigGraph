@@ -34,6 +34,10 @@ from torchbiggraph.types import UNPARTITIONED
 from gevent.threadpool import ThreadPool
 
 
+def _pool_size(max_size):
+    return min(os.cpu_count() * 2 + 1, max_size)
+
+
 def log(msg):
     print(f"[{datetime.datetime.now()}] {msg}", flush=True)
 
@@ -111,7 +115,7 @@ def collect_relation_types(
 
             return counter
 
-        p = ThreadPool(max(os.cpu_count(), 3))
+        p = ThreadPool(_pool_size(len(edge_paths)))
         counter_list = p.map(_counter, edge_paths)
         counter: Counter[str] = reduce(lambda a, b: a + b, counter_list)
 
@@ -167,7 +171,7 @@ def collect_entities_by_type(
 
         return counters
 
-    p = ThreadPool(max(os.cpu_count(), 3))
+    p = ThreadPool(_pool_size(len(edge_paths)))
     counters_list = p.map(_counters, edge_paths)
 
     counters: Dict[str, Counter[str]] = {}
@@ -417,7 +421,7 @@ def convert_input_data(
             edgelist_reader,
         )
 
-    p = ThreadPool(max(os.cpu_count(), 3))
+    p = ThreadPool(_pool_size(len(edge_paths_in)))
     p.map(_generate_edge_path_files, zip(
         edge_paths_in, edge_paths_out, edge_storages))
 
