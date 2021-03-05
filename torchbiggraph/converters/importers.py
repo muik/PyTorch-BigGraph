@@ -116,8 +116,8 @@ def collect_relation_types(
             return counter
 
         p = ThreadPool(_pool_size(len(edge_paths)))
-        counter_list = p.map(_counter, edge_paths)
-        counter: Counter[str] = reduce(lambda a, b: a + b, counter_list)
+        counter: Counter[str] = reduce(lambda a, b: a + b,
+                p.imap_unordered(_counter, edge_paths))
 
         log(f"- Found {len(counter)} relation types")
         if relation_type_min_count > 0:
@@ -171,14 +171,12 @@ def collect_entities_by_type(
 
         return counters
 
-    p = ThreadPool(_pool_size(len(edge_paths)))
-    counters_list = p.map(_counters, edge_paths)
-
     counters: Dict[str, Counter[str]] = {}
     for entity_name in entity_configs.keys():
         counters[entity_name] = Counter()
 
-    for item in counters_list:
+    p = ThreadPool(_pool_size(min(len(edge_paths), 20)))
+    for item in p.imap_unordered(_counters, edge_paths):
         for entity_name, counter in item.items():
             counters[entity_name] += counter
 
