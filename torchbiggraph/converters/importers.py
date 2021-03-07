@@ -6,16 +6,24 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE.txt file in the root directory of this source tree.
 
-import os
 import datetime
+import fileinput
+import os
 import random
+import time
 from abc import ABC, abstractmethod
 from contextlib import ExitStack
 from functools import reduce
+from multiprocessing import Pool
+from multiprocessing.pool import ThreadPool
 from pathlib import Path
-from typing import Any, Counter, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Counter, Dict, Iterable, List, Optional, Tuple, Union
 
 import torch
+from gevent.pool import Pool as GPool
+from gevent.threadpool import ThreadPool as GThreadPool
+from tqdm import tqdm
+
 from torchbiggraph.config import EntitySchema, RelationSchema
 from torchbiggraph.converters.dictionary import Dictionary
 from torchbiggraph.edgelist import EdgeList
@@ -30,8 +38,6 @@ from torchbiggraph.graph_storages import (
     AbstractRelationTypeStorage,
 )
 from torchbiggraph.types import UNPARTITIONED
-
-from gevent.threadpool import ThreadPool
 
 
 def _pool_size(max_size):
@@ -53,7 +59,14 @@ class TSVEdgelistReader(EdgelistReader):
     def __init__(self, lhs_col: int, rhs_col: int, rel_col: int):
         self.lhs_col, self.rhs_col, self.rel_col = lhs_col, rhs_col, rel_col
 
-    def read(self, path: Path):
+    def read(self, path: Union[Path, list]):
+        if type(path) == list:
+            with Pool(os.cpu_count()) as pool:
+                for item in pool.imap_unordered(self._parse,
+                        fileinput.input(path), chunksize=2000):
+                    yield item
+            return
+
         with path.open("rt") as tf:
             for line_num, line in enumerate(tf, start=1):
                 words = line.split()
@@ -67,6 +80,17 @@ class TSVEdgelistReader(EdgelistReader):
                         f"Line {line_num} of {path} has only {len(words)} words"
                     ) from None
 
+    def _parse(self, line):
+        words = line.split()
+        try:
+            lhs_word = words[self.lhs_col]
+            rhs_word = words[self.rhs_col]
+            rel_word = words[self.rel_col] if self.rel_col is not None else None
+            return lhs_word, rhs_word, rel_word
+        except IndexError:
+            raise RuntimeError(
+                f"only {len(words)} words"
+            ) from None
 
 class ParquetEdgelistReader(EdgelistReader):
     def __init__(self, lhs_col: str, rhs_col: str, rel_col: Optional[str]):
@@ -96,6 +120,17 @@ class ParquetEdgelistReader(EdgelistReader):
                     yield (row[0], row[1], None)
 
 
+def _counter(reader):
+    log("Looking up relation types in the edge files...")
+    counter: Counter[str] = Counter()
+    for _lhs_word, _rhs_word, rel_word in reader:
+        if rel_word is None:
+            raise RuntimeError("Need to specify rel_col in dynamic mode.")
+        counter[rel_word] += 1
+
+    return counter
+
+
 def collect_relation_types(
     relation_configs: List[RelationSchema],
     edge_paths: List[Path],
@@ -105,19 +140,9 @@ def collect_relation_types(
 ) -> Dictionary:
 
     if dynamic_relations:
-        def _counter(edgepath):
-            log("Looking up relation types in the edge files...")
-            counter: Counter[str] = Counter()
-            for _lhs_word, _rhs_word, rel_word in edgelist_reader.read(edgepath):
-                if rel_word is None:
-                    raise RuntimeError("Need to specify rel_col in dynamic mode.")
-                counter[rel_word] += 1
-
-            return counter
-
-        p = ThreadPool(_pool_size(len(edge_paths)))
-        counter: Counter[str] = reduce(lambda a, b: a + b,
-                p.imap_unordered(_counter, edge_paths))
+        p = Pool(_pool_size(len(edge_paths)))
+        counters = p.imap_unordered(_counter, map(edgelist_reader.read, edge_paths))
+        counter: Counter[str] = reduce(lambda a, b: a + b, counters)
 
         log(f"- Found {len(counter)} relation types")
         if relation_type_min_count > 0:
@@ -150,14 +175,22 @@ def collect_entities_by_type(
     entity_min_count: int,
 ) -> Dict[str, Dictionary]:
 
-    def _counters(edgepath):
-        counters: Dict[str, Counter[str]] = {}
-        for entity_name in entity_configs.keys():
-            counters[entity_name] = Counter()
+    counters: Dict[str, Counter[str]] = {}
+    for entity_name in entity_configs.keys():
+        counters[entity_name] = Counter()
 
-        log("Searching for the entities in the edge files...")
+    log("Searching for the entities in the edge files...")
 
-        for lhs_word, rhs_word, rel_word in edgelist_reader.read(edgepath):
+    t = time.time()
+
+    if len(entity_configs.keys()) == 1:
+        counter = list(counters.values())[0]
+
+        for lhs_word, rhs_word, _ in tqdm(edgelist_reader.read(edge_paths)):
+            counter[lhs_word] += 1
+            counter[rhs_word] += 1
+    else:
+        for lhs_word, rhs_word, rel_word in tqdm(edgelist_reader.read(edge_paths)):
             if dynamic_relations or rel_word is None:
                 rel_id = 0
             else:
@@ -166,19 +199,11 @@ def collect_entities_by_type(
                 except KeyError:
                     raise RuntimeError("Could not find relation type in config")
 
-            counters[relation_configs[rel_id].lhs][lhs_word] += 1
-            counters[relation_configs[rel_id].rhs][rhs_word] += 1
+            relation_config = relation_configs[rel_id]
+            counters[relation_config.lhs][lhs_word] += 1
+            counters[relation_config.rhs][rhs_word] += 1
 
-        return counters
-
-    counters: Dict[str, Counter[str]] = {}
-    for entity_name in entity_configs.keys():
-        counters[entity_name] = Counter()
-
-    p = ThreadPool(_pool_size(min(len(edge_paths), 20)))
-    for item in p.imap_unordered(_counters, edge_paths):
-        for entity_name, counter in item.items():
-            counters[entity_name] += counter
+    log(f"{time.time() - t:.2f}s")
 
     entities_by_type: Dict[str, Dictionary] = {}
     for entity_name, counter in counters.items():
@@ -406,22 +431,16 @@ def convert_input_data(
         dynamic_relations,
     )
 
-    def _generate_edge_path_files(item):
-        edge_path_in, edge_path_out, edge_storage = item
-        generate_edge_path_files(
-            edge_path_in,
-            edge_path_out,
-            edge_storage,
-            entities_by_type,
-            relation_types,
-            relation_configs,
-            dynamic_relations,
-            edgelist_reader,
-        )
-
-    p = ThreadPool(_pool_size(len(edge_paths_in)))
-    p.map(_generate_edge_path_files, zip(
-        edge_paths_in, edge_paths_out, edge_storages))
+    with Pool(_pool_size(len(edge_paths_in))) as p:
+        p.starmap(generate_edge_path_files, map(
+            lambda x: x + (
+                entities_by_type,
+                relation_types,
+                relation_configs,
+                dynamic_relations,
+                edgelist_reader,
+            ), zip(edge_paths_in, edge_paths_out, edge_storages)
+        ))
 
 
 def parse_config_partial(
