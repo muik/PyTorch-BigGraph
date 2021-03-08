@@ -186,9 +186,20 @@ def collect_entities_by_type(
     if len(entity_configs.keys()) == 1:
         counter = list(counters.values())[0]
 
-        for lhs_word, rhs_word, _ in tqdm(edgelist_reader.read(edge_paths)):
-            counter[lhs_word] += 1
-            counter[rhs_word] += 1
+        #for lhs_word, rhs_word, _ in tqdm(edgelist_reader.read(edge_paths)):
+        #    counter[lhs_word] += 1
+        #    counter[rhs_word] += 1
+
+        import glob
+        for path in glob.glob("data/user-csv/entity_counter-*.csv"):
+            with open(path, "r") as f:
+                lines = f.__iter__()
+                next(lines)
+
+                for line in lines:
+                    i = line.rindex(",")
+                    entity, cnt = line[:i], int(line[i+1:-1])
+                    counter[entity] = cnt
     else:
         for lhs_word, rhs_word, rel_word in tqdm(edgelist_reader.read(edge_paths)):
             if dynamic_relations or rel_word is None:
@@ -431,7 +442,7 @@ def convert_input_data(
         dynamic_relations,
     )
 
-    with Pool(_pool_size(len(edge_paths_in))) as p:
+    with Pool(_pool_size(min(len(edge_paths_in), 10))) as p:
         p.starmap(generate_edge_path_files, map(
             lambda x: x + (
                 entities_by_type,
