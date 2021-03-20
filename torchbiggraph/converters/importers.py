@@ -191,7 +191,7 @@ def collect_entities_by_type(
         #    counter[lhs_word] += 1
         #    counter[rhs_word] += 1
 
-        for path in glob.glob("data/user-csv/entity_counter-*.csv"):
+        for path in glob.glob("data/user-csv/entity_counter*.csv"):
             with open(path, "r") as f:
                 lines = f.__iter__()
                 next(lines)
@@ -207,7 +207,7 @@ def collect_entities_by_type(
             name[0]: name
             for name in ["user", "article", "region", "keyword", "category"]
         }
-        for path in glob.glob("data/user-csv/entity_counter-*.csv"):
+        for path in glob.glob("data/user-csv/entity_counter*.csv"):
             with open(path, "r") as f:
                 lines = f.__iter__()
                 next(lines)
