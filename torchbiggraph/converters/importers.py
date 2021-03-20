@@ -11,6 +11,7 @@ import fileinput
 import os
 import random
 import time
+import glob
 from abc import ABC, abstractmethod
 from contextlib import ExitStack
 from functools import reduce
@@ -190,7 +191,6 @@ def collect_entities_by_type(
         #    counter[lhs_word] += 1
         #    counter[rhs_word] += 1
 
-        import glob
         for path in glob.glob("data/user-csv/entity_counter-*.csv"):
             with open(path, "r") as f:
                 lines = f.__iter__()
@@ -199,20 +199,41 @@ def collect_entities_by_type(
                 for line in lines:
                     i = line.rindex(",")
                     entity, cnt = line[:i], int(line[i+1:-1])
+                    if entity[0] == '"':
+                        entity = entity[1:-1]
                     counter[entity] = cnt
     else:
-        for lhs_word, rhs_word, rel_word in tqdm(edgelist_reader.read(edge_paths)):
-            if dynamic_relations or rel_word is None:
-                rel_id = 0
-            else:
-                try:
-                    rel_id = relation_types.get_id(rel_word)
-                except KeyError:
-                    raise RuntimeError("Could not find relation type in config")
+        code_to_name = {
+            name[0]: name
+            for name in ["user", "article", "region", "keyword", "category"]
+        }
+        for path in glob.glob("data/user-csv/entity_counter-*.csv"):
+            with open(path, "r") as f:
+                lines = f.__iter__()
+                next(lines)
 
-            relation_config = relation_configs[rel_id]
-            counters[relation_config.lhs][lhs_word] += 1
-            counters[relation_config.rhs][rhs_word] += 1
+                for line in lines:
+                    i = line.rindex(",")
+                    entity, cnt = line[:i], int(line[i+1:-1])
+                    code = entity[0]
+                    if code == '"':
+                        entity = entity[1:-1]
+                        code = entity[0]
+                    hs = code_to_name[code]
+                    counters[hs][entity] = cnt
+
+        # for lhs_word, rhs_word, rel_word in tqdm(edgelist_reader.read(edge_paths)):
+        #     if dynamic_relations or rel_word is None:
+        #         rel_id = 0
+        #     else:
+        #         try:
+        #             rel_id = relation_types.get_id(rel_word)
+        #         except KeyError:
+        #             raise RuntimeError("Could not find relation type in config")
+
+        #     relation_config = relation_configs[rel_id]
+        #     counters[relation_config.lhs][lhs_word] += 1
+        #     counters[relation_config.rhs][rhs_word] += 1
 
     log(f"{time.time() - t:.2f}s")
 
