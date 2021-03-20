@@ -9,6 +9,7 @@
 import argparse
 import logging
 import time
+import glob
 from functools import partial
 from typing import Callable, Generator, List, Optional, Tuple
 
@@ -137,9 +138,11 @@ def do_eval_and_report_stats(
         holder.unpartitioned_embeddings[entity] = embs
 
     all_stats: List[Stats] = []
-    for edge_path_idx, edge_path in enumerate(config.edge_paths):
+    edge_paths = [path for pattern in config.edge_paths for path in glob.glob(pattern)]
+
+    for edge_path_idx, edge_path in enumerate(edge_paths):
         logger.info(
-            f"Starting edge path {edge_path_idx + 1} / {len(config.edge_paths)} "
+            f"Starting edge path {edge_path_idx + 1} / {len(edge_paths)} "
             f"({edge_path})"
         )
         edge_storage = EDGE_STORAGES.make_instance(edge_path)
@@ -198,7 +201,7 @@ def do_eval_and_report_stats(
             all_edge_path_stats.append(total_bucket_stats)
             mean_bucket_stats = total_bucket_stats.average()
             logger.info(
-                f"Stats for edge path {edge_path_idx + 1} / {len(config.edge_paths)}, "
+                f"Stats for edge path {edge_path_idx + 1} / {len(edge_paths)}, "
                 f"bucket {bucket}: {mean_bucket_stats}"
             )
 
@@ -211,7 +214,7 @@ def do_eval_and_report_stats(
         mean_edge_path_stats = total_edge_path_stats.average()
         logger.info("")
         logger.info(
-            f"Stats for edge path {edge_path_idx + 1} / {len(config.edge_paths)}: "
+            f"Stats for edge path {edge_path_idx + 1} / {len(edge_paths)}: "
             f"{mean_edge_path_stats}"
         )
         logger.info("")
